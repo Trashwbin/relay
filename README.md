@@ -2,8 +2,9 @@
 
 Relay is an AI work companion built on Pi. The first milestone provides an
 isolated CLI, a private Pi agent directory, and a pinned notes/context
-continuity extension. Pi remains the replaceable runtime; Relay owns product
-configuration and the default capability bundle.
+continuity extension. Pi and the extension are included as pinned Git
+submodules under `vendor/`; Relay owns the product configuration and the
+default capability bundle.
 
 ## Requirements
 
@@ -13,17 +14,21 @@ configuration and the default capability bundle.
 ## Develop
 
 ```sh
-npm install
-npm run build
+git submodule update --init --recursive
+npm ci
+npm run bootstrap
 npm link
-node dist/cli.js init
-node dist/cli.js doctor
-node dist/cli.js
+relay init
+relay doctor
+relay
 ```
 
-`relay init` creates `~/.relay/agent` and installs the pinned
-`@howaboua/pi-notes-compaction` package into that isolated Pi profile.
-Existing `~/.pi` settings, sessions, credentials, and notes stay separate.
+`npm run bootstrap` installs dependencies, hydrates the model catalog when needed
+(requires network access), and builds the Pi source in `vendor/pi` plus Relay.
+The Notes extension loads directly from its TypeScript source; its SQLite
+dependency is pinned in Relay's root package. `relay init` creates `~/.relay/agent`.
+Existing `~/.pi` settings,
+sessions, credentials, and notes stay separate.
 
 Start Relay from the project directory you want it to work in:
 
@@ -56,10 +61,26 @@ through Pi's `/login` flow after starting Relay. Add custom providers and model
 definitions to `models.json`; choose the default model in `settings.json`.
 `relay doctor` reports whether the profile and pinned extension are ready.
 Set `RELAY_HOME=/absolute/path` to select a separate Relay profile.
-Initialization preserves existing configuration and installs the pinned plugin
-through Pi's package manager. Plugin installation builds its SQLite dependency.
 The first milestone uses Pi's TUI; Relay branding and additional integrations
 can be added as extensions.
+
+## Source layout
+
+```text
+vendor/
+├── pi/                         # earendil-works/pi, pinned commit
+└── pi-stuff/                   # howaboua-pi-stuff, pinned commit
+    └── packages/pi-notes-compaction/
+```
+
+Clone with `git clone --recurse-submodules` or run
+`git submodule update --init --recursive` after a normal clone.
+Rebuild with `npm run bootstrap` after editing Pi or updating its source pointer.
+Restart Relay after editing the Notes extension.
+
+Run `npm test` after bootstrap to verify configuration migration, the local Pi
+entry point, extension tool registration, and local notes/history storage through
+the SDK. These checks run without model requests.
 
 ## Product boundary
 
@@ -70,5 +91,5 @@ relay CLI
   -> project files, sessions, MCP, skills, and model providers
 ```
 
-Relay composes and configures Pi through its public CLI/package interfaces.
-The Pi source remains an upstream dependency and does not live in this repo.
+Relay composes and configures the checked-in Pi source through its CLI
+interface. Upstream changes are reviewed by updating the submodule pointer.

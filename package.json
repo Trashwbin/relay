@@ -8,12 +8,14 @@
     "relay": "./dist/cli.js"
   },
   "scripts": {
+    "bootstrap": "node scripts/bootstrap.mjs",
     "build": "tsc -p tsconfig.json",
     "check": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs",
     "dev": "node --import tsx src/cli.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0"
+    "better-sqlite3": "13.0.3"
   },
   "devDependencies": {
     "@types/node": "22.19.19",

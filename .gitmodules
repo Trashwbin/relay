@@ -1,0 +1,6 @@
+[submodule "vendor/pi"]
+	path = vendor/pi
+	url = https://github.com/earendil-works/pi.git
+[submodule "vendor/pi-stuff"]
+	path = vendor/pi-stuff
+	url = https://github.com/IgorWarzocha/howaboua-pi-stuff.git

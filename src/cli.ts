@@ -1,17 +1,17 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import {
-  DefaultPackageManager,
-  main as piMain,
-  SettingsManager,
-} from "@earendil-works/pi-coding-agent";
 import {
   AGENT_DIR,
   AUTH_PATH,
   EXTENSION_SOURCE,
   MODELS_PATH,
   NOTES_SETTINGS_PATH,
+  PI_CLI_PATH,
+  PI_SOURCE_DIR,
   RELAY_HOME,
   SETTINGS_PATH,
 } from "./config.js";
@@ -45,19 +45,29 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   );
 }
 
-function packageManager(): DefaultPackageManager {
-  const cwd = process.cwd();
-  return new DefaultPackageManager({
-    cwd,
-    agentDir: AGENT_DIR,
-    settingsManager: SettingsManager.create(cwd, AGENT_DIR, { projectTrusted: false }),
-  });
-}
-
-async function init(): Promise<void> {
+async function init(quiet = false): Promise<void> {
   await mkdir(join(AGENT_DIR, "notes-compaction"), { recursive: true, mode: 0o700 });
   await mkdir(join(AGENT_DIR, "sessions"), { recursive: true, mode: 0o700 });
-  await writeJson(SETTINGS_PATH, {});
+  await writeJson(SETTINGS_PATH, { packages: [EXTENSION_SOURCE] });
+  const settings = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as {
+    packages?: Array<string | { source: string }>;
+  };
+  const packages = settings.packages ?? [];
+  const localPackage = packages.find(
+    (entry) => (typeof entry === "string" ? entry : entry.source) === EXTENSION_SOURCE,
+  );
+  const otherPackages = packages.filter((entry) => {
+    const source = typeof entry === "string" ? entry : entry.source;
+    return source !== EXTENSION_SOURCE &&
+      source !== "npm:@howaboua/pi-notes-compaction" &&
+      !source.startsWith("npm:@howaboua/pi-notes-compaction@");
+  });
+  const nextPackages = [...otherPackages, localPackage ?? EXTENSION_SOURCE];
+  if (JSON.stringify(packages) !== JSON.stringify(nextPackages)) {
+    await writeFile(SETTINGS_PATH, `${JSON.stringify({ ...settings, packages: nextPackages }, null, 2)}\n`, {
+      mode: 0o600,
+    });
+  }
   await writeJson(AUTH_PATH, {});
   await writeJson(MODELS_PATH, {});
   await writeJson(NOTES_SETTINGS_PATH, {
@@ -68,10 +78,12 @@ async function init(): Promise<void> {
     taskBoundaryReminder: 0,
   });
 
-  console.log(`Preparing ${EXTENSION_SOURCE}`);
-  await packageManager().installAndPersist(EXTENSION_SOURCE);
-  console.log(`Initialized Relay profile at ${AGENT_DIR}`);
-  console.log("Start Relay and use /login to connect a provider.");
+  if (!quiet) {
+    console.log(`Initialized Relay profile at ${AGENT_DIR}`);
+    console.log(`Pi source: ${PI_SOURCE_DIR}`);
+    console.log(`Notes extension: ${EXTENSION_SOURCE}`);
+    console.log("Start Relay and use /login to connect a provider.");
+  }
 }
 
 async function doctor(): Promise<void> {
@@ -85,31 +97,74 @@ async function doctor(): Promise<void> {
     }
   }
 
+  checks.push([
+    "Pi source",
+    existsSync(PI_SOURCE_DIR),
+    existsSync(PI_SOURCE_DIR)
+      ? PI_SOURCE_DIR
+      : "missing submodule; run git submodule update --init --recursive",
+  ]);
+  checks.push([
+    "Pi build",
+    existsSync(PI_CLI_PATH),
+    existsSync(PI_CLI_PATH) ? PI_CLI_PATH : "missing; run npm run bootstrap",
+  ]);
+  checks.push([
+    "notes/context extension",
+    existsSync(join(EXTENSION_SOURCE, "package.json")),
+    existsSync(join(EXTENSION_SOURCE, "package.json"))
+      ? EXTENSION_SOURCE
+      : "missing submodule; run git submodule update --init --recursive",
+  ]);
   try {
     const settings = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as {
-      packages?: Array<string | { source?: string }>;
+      packages?: Array<string | { source: string }>;
     };
     const declared = settings.packages?.some(
       (entry) => (typeof entry === "string" ? entry : entry.source) === EXTENSION_SOURCE,
     ) ?? false;
-    const installedPath = packageManager().getInstalledPath(EXTENSION_SOURCE, "user");
-    const manifest = installedPath
-      ? JSON.parse(await readFile(join(installedPath, "package.json"), "utf8")) as { version?: string }
-      : undefined;
-    const installed = declared && manifest?.version === EXTENSION_SOURCE.split("@").at(-1);
-    checks.push([
-      "notes/context extension",
-      installed,
-      installed ? `${EXTENSION_SOURCE} at ${installedPath}` : "run relay init to install the pinned extension",
-    ]);
+    checks.push(["local extension configuration", declared, declared ? EXTENSION_SOURCE : "run relay init"]);
   } catch {
-    checks.push(["notes/context extension", false, "Relay settings could not be read"]);
+    checks.push(["local extension configuration", false, "run relay init"]);
+  }
+  try {
+    const Database = createRequire(import.meta.url)("better-sqlite3");
+    const db = new Database(":memory:");
+    try {
+      db.prepare("SELECT 1").get();
+    } finally {
+      db.close();
+    }
+    checks.push(["notes SQLite storage", true, "binding loaded and query completed"]);
+  } catch (error) {
+    checks.push(["notes SQLite storage", false, error instanceof Error ? error.message : String(error)]);
   }
 
   for (const [name, ok, detail] of checks) {
     console.log(`${ok ? "OK" : "NEEDS ATTENTION"}  ${name}: ${detail}`);
   }
   if (checks.some(([, ok]) => !ok)) process.exitCode = 1;
+}
+
+function startPi(args: string[]): Promise<void> {
+  if (!existsSync(PI_CLI_PATH)) {
+    throw new Error(`Local Pi build is missing at ${PI_CLI_PATH}; run npm run bootstrap first`);
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [PI_CLI_PATH, ...args], {
+      cwd: process.cwd(),
+      env: { ...process.env, PI_CODING_AGENT_DIR: AGENT_DIR },
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) reject(new Error(`Pi exited with signal ${signal}`));
+      else {
+        process.exitCode = code ?? 1;
+        resolve();
+      }
+    });
+  });
 }
 
 async function run(): Promise<void> {
@@ -129,15 +184,10 @@ async function run(): Promise<void> {
     return;
   }
 
-  if (args.length === 0) {
-    try {
-      await readFile(SETTINGS_PATH, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      await init();
-    }
+  if (!args.includes("--help") && !args.includes("-h") && !args.includes("--version") && !args.includes("-v")) {
+    await init(true);
   }
-  await piMain(args);
+  await startPi(args);
 }
 
 await run().catch((error: unknown) => {
