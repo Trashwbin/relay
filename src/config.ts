@@ -11,6 +11,7 @@ export const AUTH_PATH = join(AGENT_DIR, "auth.json");
 export const MODELS_PATH = join(AGENT_DIR, "models.json");
 export const PI_SOURCE_DIR = join(RELAY_ROOT, "vendor", "pi");
 export const PI_CLI_PATH = join(PI_SOURCE_DIR, "packages", "coding-agent", "dist", "bundle", "cli.js");
+export const RELAY_IDENTITY_EXTENSION = join(RELAY_ROOT, "extensions", "relay-identity.js");
 export const EXTENSION_SOURCE = join(
   RELAY_ROOT,
   "vendor",

@@ -67,16 +67,23 @@ can be added as extensions.
 ## Source layout
 
 ```text
+extensions/
+└── relay-identity.js          # Relay-branded model identity and prompt guidance
 vendor/
 ├── pi/                         # earendil-works/pi, pinned commit
 └── pi-stuff/                   # howaboua-pi-stuff, pinned commit
     └── packages/pi-notes-compaction/
 ```
 
+Relay loads its identity extension from this repository through the isolated
+profile. The extension sets Relay's model-facing identity and carries forward
+the active tool descriptions and guidance; notes and context rollover remain
+owned by `pi-notes-compaction`.
+
 Clone with `git clone --recurse-submodules` or run
 `git submodule update --init --recursive` after a normal clone.
 Rebuild with `npm run bootstrap` after editing Pi or updating its source pointer.
-Restart Relay after editing the Notes extension.
+Restart Relay after editing an extension.
 
 Run `npm test` after bootstrap to verify configuration migration, the local Pi
 entry point, extension tool registration, and local notes/history storage through

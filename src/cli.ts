@@ -12,6 +12,7 @@ import {
   NOTES_SETTINGS_PATH,
   PI_CLI_PATH,
   PI_SOURCE_DIR,
+  RELAY_IDENTITY_EXTENSION,
   RELAY_HOME,
   SETTINGS_PATH,
 } from "./config.js";
@@ -51,6 +52,7 @@ async function init(quiet = false): Promise<void> {
   await writeJson(SETTINGS_PATH, { packages: [EXTENSION_SOURCE] });
   const settings = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as {
     packages?: Array<string | { source: string }>;
+    extensions?: string[];
   };
   const packages = settings.packages ?? [];
   const localPackage = packages.find(
@@ -63,10 +65,19 @@ async function init(quiet = false): Promise<void> {
       !source.startsWith("npm:@howaboua/pi-notes-compaction@");
   });
   const nextPackages = [...otherPackages, localPackage ?? EXTENSION_SOURCE];
-  if (JSON.stringify(packages) !== JSON.stringify(nextPackages)) {
-    await writeFile(SETTINGS_PATH, `${JSON.stringify({ ...settings, packages: nextPackages }, null, 2)}\n`, {
-      mode: 0o600,
-    });
+  const extensions = settings.extensions ?? [];
+  const nextExtensions = extensions.includes(RELAY_IDENTITY_EXTENSION)
+    ? extensions
+    : [...extensions, RELAY_IDENTITY_EXTENSION];
+  if (
+    JSON.stringify(packages) !== JSON.stringify(nextPackages) ||
+    JSON.stringify(extensions) !== JSON.stringify(nextExtensions)
+  ) {
+    await writeFile(
+      SETTINGS_PATH,
+      `${JSON.stringify({ ...settings, packages: nextPackages, extensions: nextExtensions }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
   }
   await writeJson(AUTH_PATH, {});
   await writeJson(MODELS_PATH, {});
@@ -116,14 +127,28 @@ async function doctor(): Promise<void> {
       ? EXTENSION_SOURCE
       : "missing submodule; run git submodule update --init --recursive",
   ]);
+  checks.push([
+    "Relay identity extension",
+    existsSync(RELAY_IDENTITY_EXTENSION),
+    existsSync(RELAY_IDENTITY_EXTENSION)
+      ? RELAY_IDENTITY_EXTENSION
+      : "missing Relay-owned identity extension",
+  ]);
   try {
     const settings = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as {
       packages?: Array<string | { source: string }>;
+      extensions?: string[];
     };
     const declared = settings.packages?.some(
       (entry) => (typeof entry === "string" ? entry : entry.source) === EXTENSION_SOURCE,
     ) ?? false;
     checks.push(["local extension configuration", declared, declared ? EXTENSION_SOURCE : "run relay init"]);
+    const identityConfigured = settings.extensions?.includes(RELAY_IDENTITY_EXTENSION) ?? false;
+    checks.push([
+      "Relay identity configuration",
+      identityConfigured,
+      identityConfigured ? RELAY_IDENTITY_EXTENSION : "run relay init",
+    ]);
   } catch {
     checks.push(["local extension configuration", false, "run relay init"]);
   }

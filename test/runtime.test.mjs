@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(root, "dist", "cli.js");
 const plugin = join(root, "vendor", "pi-stuff", "packages", "pi-notes-compaction");
+const identityExtension = join(root, "extensions", "relay-identity.js");
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), "relay-test-"));
@@ -20,6 +22,7 @@ async function fixture(t) {
   return {
     home,
     cwd,
+    env,
     agentDir: join(home, "agent"),
     run(...args) {
       const result = spawnSync(process.execPath, [cli, ...args], {
@@ -46,6 +49,7 @@ test("init migrates the plugin and retains profile configuration", async (t) => 
       "npm:@howaboua/pi-notes-compaction@0.0.9",
       { source: plugin, extensions: ["src/index.ts"] },
     ],
+    extensions: ["./custom-extension.js"],
   };
   const auth = '{"example":{"type":"api_key","key":"test-only"}}\n';
   const models = '{"providers":{}}\n';
@@ -61,6 +65,7 @@ test("init migrates the plugin and retains profile configuration", async (t) => 
   assert.deepEqual(JSON.parse(await readFile(settingsPath, "utf8")), {
     ...settings,
     packages: ["npm:another-extension", { source: plugin, extensions: ["src/index.ts"] }],
+    extensions: ["./custom-extension.js", identityExtension],
   });
   assert.equal(await readFile(authPath, "utf8"), auth);
   assert.equal(await readFile(modelsPath, "utf8"), models);
@@ -75,12 +80,149 @@ test("init migrates the plugin and retains profile configuration", async (t) => 
   assert.match(doctor.stdout, /NEEDS ATTENTION.*local extension configuration/);
 });
 
+test("Relay identity extension brands the system prompt and preserves dynamic tool guidance", async () => {
+  const { default: extension } = await import("../extensions/relay-identity.js");
+  let beforeAgentStart;
+  extension({
+    on(event, handler) {
+      assert.equal(event, "before_agent_start");
+      beforeAgentStart = handler;
+    },
+  });
+
+  const options = {
+    selectedTools: ["read", "bash"],
+    hiddenTools: ["bash"],
+    toolSnippets: { read: "Read files from the workspace.", bash: "Run shell commands." },
+    toolGuidelines: { read: ["Read the target file before editing it."] },
+    promptGuidelines: ["Preserve established project conventions."],
+    sections: { context_window_guidance: "Save task state at meaningful milestones." },
+  };
+  beforeAgentStart({ systemPromptOptions: options });
+
+  assert.match(options.customPrompt, /You are Relay/);
+  assert.doesNotMatch(options.customPrompt, /\bPi\b|\bpi\b/);
+  assert.match(options.sections.relay_tools, /- read: Read files/);
+  assert.doesNotMatch(options.sections.relay_tools, /bash/);
+  assert.match(options.sections.relay_guidance, /Read the target file before editing it/);
+  assert.match(options.sections.relay_guidance, /Preserve established project conventions/);
+  assert.equal(options.sections.context_window_guidance, "Save task state at meaningful milestones.");
+
+  const existingPrompt = options.customPrompt;
+  beforeAgentStart({ systemPromptOptions: options });
+  assert.equal(options.customPrompt, existingPrompt);
+
+  const configured = { ...options, customPrompt: "Follow the user's preferred language." };
+  beforeAgentStart({ systemPromptOptions: configured });
+  assert.ok(configured.customPrompt.startsWith(existingPrompt));
+  assert.ok(configured.customPrompt.endsWith("Follow the user's preferred language."));
+});
+
 test("Relay starts its vendored Pi entry point", async (t) => {
   const f = await fixture(t);
   const result = f.run("--version");
   const manifest = JSON.parse(await readFile(join(root, "vendor", "pi", "packages", "coding-agent", "package.json"), "utf8"));
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), manifest.version);
+});
+
+test("Relay sends its identity, project context, and Notes tools to a local model endpoint", async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.run("init").status, 0);
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    try {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      requests.push({ path: req.url, body: JSON.parse(body) });
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const chunk = {
+        id: "relay-local-response",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "identity-test",
+        choices: [{ index: 0, delta: { role: "assistant", content: "Relay." }, finish_reason: null }],
+      };
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        ...chunk,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 2, total_tokens: 102 },
+      })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    } catch (error) {
+      res.writeHead(400);
+      res.end(String(error));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+  await writeFile(join(f.agentDir, "models.json"), JSON.stringify({
+    providers: {
+      "relay-test": {
+        api: "openai-completions",
+        baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+        apiKey: "local-test-only",
+        models: [{
+          id: "identity-test",
+          reasoning: false,
+          input: ["text"],
+          contextWindow: 128_000,
+          maxTokens: 128,
+        }],
+      },
+    },
+  }));
+  await writeFile(join(f.cwd, "AGENTS.md"), "Project instruction: preserve the Relay fixture marker 4729.\n");
+
+  const child = spawn(process.execPath, [
+    cli, "--provider", "relay-test", "--model", "identity-test",
+    "--thinking", "off", "--no-session", "--no-skills", "--no-prompt-templates",
+    "--no-themes", "--print", "Identify yourself in one word.",
+  ], { cwd: f.cwd, env: f.env, detached: true, signal: AbortSignal.timeout(20_000) });
+  child.stdin.end();
+  t.after(() => {
+    try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (data) => { stdout += data; });
+  child.stderr.setEncoding("utf8").on("data", (data) => { stderr += data; });
+  const status = await new Promise((resolve, reject) => {
+    child.once("error", (error) => reject(new Error(
+      `${error.message}; requests=${requests.length}; stdout=${stdout}; stderr=${stderr}`,
+      { cause: error },
+    )));
+    child.once("close", resolve);
+  });
+  assert.equal(status, 0, stderr);
+  assert.match(stdout, /Relay\./);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "/v1/chat/completions");
+  const payload = requests[0].body;
+  const systemMessages = payload.messages.filter(
+    (message) => message.role === "system" || message.role === "developer",
+  );
+  const systemPrompt = systemMessages.map((message) => message.content).join("\n");
+  assert.ok(systemPrompt.startsWith("You are Relay, the user's AI work companion."));
+  assert.doesNotMatch(systemPrompt, /operating inside pi|Pi documentation/);
+  assert.match(systemPrompt, /<relay_tools>[\s\S]*- read:/);
+  assert.match(systemPrompt, /<relay_guidance>/);
+  assert.match(systemPrompt, /preserve the Relay fixture marker 4729/);
+  assert.ok(payload.messages.some(
+    (message) => message.role === "user" && JSON.stringify(message.content).includes("<context_window_guidance>"),
+  ), "Notes window guidance reaches the model as a user message");
+  for (const name of ["notes", "history", "new_context", "get_context_remaining"]) {
+    assert.ok(payload.tools.some((tool) => tool.function?.name === name), `${name} reaches the model`);
+  }
 });
 
 test("the local plugin registers tools and persists notes through the SDK", async (t) => {
@@ -112,6 +254,11 @@ test("the local plugin registers tools and persists notes through the SDK", asyn
   });
   await resourceLoader.reload();
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
+  const identity = resourceLoader.getExtensions().extensions.find(
+    (extension) => extension.path === identityExtension || extension.resolvedPath === identityExtension,
+  );
+  assert.ok(identity, "Relay identity extension is loaded from the Relay repository");
+  assert.ok(identity.handlers.get("before_agent_start")?.length, "Relay identity hook is registered");
   const sessionManager = SessionManager.create(f.cwd, join(f.agentDir, "sessions"));
   const { session } = await createAgentSession({
     cwd: f.cwd,
