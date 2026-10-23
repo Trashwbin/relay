@@ -1,0 +1,26 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Relay AI Work Companion, built on Pi",
+  "bin": {
+    "relay": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run build",
+    "dev": "node --import tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
