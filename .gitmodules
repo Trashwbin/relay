@@ -4,3 +4,6 @@
 [submodule "vendor/pi-stuff"]
 	path = vendor/pi-stuff
 	url = https://github.com/IgorWarzocha/howaboua-pi-stuff.git
+[submodule "vendor/pi-extension"]
+	path = vendor/pi-extension
+	url = https://github.com/Jonghakseo/pi-extension.git

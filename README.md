@@ -54,6 +54,9 @@ Relay sets `PI_CODING_AGENT_DIR` to `~/.relay/agent`. Its configuration files:
     └── notes-compaction/
         ├── notes.sqlite
         └── settings.json
+    └── memory/
+        ├── user/
+        └── projects/
 ```
 
 Provider credentials belong to Relay's `auth.json`, or can be configured
@@ -71,14 +74,17 @@ extensions/
 └── relay-identity.js          # Relay-branded model identity and prompt guidance
 vendor/
 ├── pi/                         # earendil-works/pi, pinned commit
-└── pi-stuff/                   # howaboua-pi-stuff, pinned commit
-    └── packages/pi-notes-compaction/
+├── pi-stuff/                   # howaboua-pi-stuff, pinned commit
+│   └── packages/pi-notes-compaction/
+└── pi-extension/               # Jonghakseo/pi-extension, pinned commit
+    └── packages/memory-layer/
 ```
 
 Relay loads its identity extension from this repository through the isolated
 profile. The extension sets Relay's model-facing identity and carries forward
-the active tool descriptions and guidance; notes and context rollover remain
-owned by `pi-notes-compaction`.
+the active tool descriptions and guidance. `pi-notes-compaction` owns notes and
+context rollover. `memory-layer` owns user, project, and session-scoped memory
+under Relay's isolated profile.
 
 Clone with `git clone --recurse-submodules` or run
 `git submodule update --init --recursive` after a normal clone.
@@ -86,8 +92,8 @@ Rebuild with `npm run bootstrap` after editing Pi or updating its source pointer
 Restart Relay after editing an extension.
 
 Run `npm test` after bootstrap to verify configuration migration, the local Pi
-entry point, extension tool registration, and local notes/history storage through
-the SDK. These checks run without model requests.
+entry point, extension tool registration, and local notes, history, and memory
+storage through the SDK. These checks run without model requests.
 
 ## Product boundary
 
@@ -95,6 +101,7 @@ the SDK. These checks run without model requests.
 relay CLI
   -> Pi CLI / agent runtime
   -> Notes Compaction extension
+  -> Memory Layer extension
   -> project files, sessions, MCP, skills, and model providers
 ```
 

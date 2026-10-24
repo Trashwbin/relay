@@ -19,4 +19,12 @@ export const EXTENSION_SOURCE = join(
   "packages",
   "pi-notes-compaction",
 );
+export const MEMORY_EXTENSION = join(
+  RELAY_ROOT,
+  "vendor",
+  "pi-extension",
+  "packages",
+  "memory-layer",
+  "index.ts",
+);
 

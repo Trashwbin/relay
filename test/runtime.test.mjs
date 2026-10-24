@@ -11,6 +11,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(root, "dist", "cli.js");
 const plugin = join(root, "vendor", "pi-stuff", "packages", "pi-notes-compaction");
 const identityExtension = join(root, "extensions", "relay-identity.js");
+const memoryExtension = join(root, "vendor", "pi-extension", "packages", "memory-layer", "index.ts");
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), "relay-test-"));
@@ -49,7 +50,7 @@ test("init migrates the plugin and retains profile configuration", async (t) => 
       "npm:@howaboua/pi-notes-compaction@0.0.9",
       { source: plugin, extensions: ["src/index.ts"] },
     ],
-    extensions: ["./custom-extension.js"],
+    extensions: ["./custom-extension.js", memoryExtension],
   };
   const auth = '{"example":{"type":"api_key","key":"test-only"}}\n';
   const models = '{"providers":{}}\n';
@@ -65,7 +66,7 @@ test("init migrates the plugin and retains profile configuration", async (t) => 
   assert.deepEqual(JSON.parse(await readFile(settingsPath, "utf8")), {
     ...settings,
     packages: ["npm:another-extension", { source: plugin, extensions: ["src/index.ts"] }],
-    extensions: ["./custom-extension.js", identityExtension],
+    extensions: ["./custom-extension.js", memoryExtension, identityExtension],
   });
   assert.equal(await readFile(authPath, "utf8"), auth);
   assert.equal(await readFile(modelsPath, "utf8"), models);
@@ -220,7 +221,10 @@ test("Relay sends its identity, project context, and Notes tools to a local mode
   assert.ok(payload.messages.some(
     (message) => message.role === "user" && JSON.stringify(message.content).includes("<context_window_guidance>"),
   ), "Notes window guidance reaches the model as a user message");
-  for (const name of ["notes", "history", "new_context", "get_context_remaining"]) {
+  for (const name of [
+    "notes", "history", "new_context", "get_context_remaining",
+    "memory_remember", "memory_recall", "memory_forget", "memory_list",
+  ]) {
     assert.ok(payload.tools.some((tool) => tool.function?.name === name), `${name} reaches the model`);
   }
 });
@@ -259,6 +263,11 @@ test("the local plugin registers tools and persists notes through the SDK", asyn
   );
   assert.ok(identity, "Relay identity extension is loaded from the Relay repository");
   assert.ok(identity.handlers.get("before_agent_start")?.length, "Relay identity hook is registered");
+  const memory = resourceLoader.getExtensions().extensions.find(
+    (extension) => extension.path === memoryExtension || extension.resolvedPath === memoryExtension,
+  );
+  assert.ok(memory, "Memory Layer is loaded from the vendored repository");
+  assert.ok(memory.handlers.get("before_agent_start")?.length, "Memory Layer hook is registered");
   const sessionManager = SessionManager.create(f.cwd, join(f.agentDir, "sessions"));
   const { session } = await createAgentSession({
     cwd: f.cwd,
@@ -278,10 +287,16 @@ test("the local plugin registers tools and persists notes through the SDK", asyn
     await session.bindExtensions({ onError: (error) => errors.push(error) });
     assert.deepEqual(errors, []);
     assert.ok(ctx);
-    for (const name of ["notes", "history", "new_context", "get_context_remaining"]) {
+    for (const name of [
+      "notes", "history", "new_context", "get_context_remaining",
+      "memory_remember", "memory_recall", "memory_forget", "memory_list",
+    ]) {
       assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);
       const info = session.getAllTools().find((tool) => tool.name === name);
-      assert.ok(info.sourceInfo.path.startsWith(plugin), `${name} comes from local source`);
+      const expectedSource = name.startsWith("memory_")
+        ? memoryExtension
+        : join(plugin, "src", "index.ts");
+      assert.equal(info.sourceInfo.path, expectedSource, `${name} comes from its Relay source`);
     }
     const notes = session.getToolDefinition("notes");
     const text = "Relay SDK smoke test: local note storage.";
@@ -299,6 +314,19 @@ test("the local plugin registers tools and persists notes through the SDK", asyn
       action: "search_contents", query: "historical evidence 4729",
     }, undefined, undefined, ctx);
     assert.ok(found.content.some((block) => block.type === "text" && block.text.includes("historical evidence 4729")));
+    const remember = session.getToolDefinition("memory_remember");
+    const memoryText = "Use Chinese for Relay explanations.";
+    const saved = await remember.execute("memory-write-test", {
+      content: memoryText, title: "Relay language preference", scope: "user", tier: "profile", topic: "general",
+    }, undefined, undefined, ctx);
+    assert.ok(saved.content.some((block) => block.type === "text" && block.text.includes("Memory saved.")));
+    const recall = session.getToolDefinition("memory_recall");
+    const recalled = await recall.execute("memory-read-test", {
+      query: "language preference", scope: "user",
+    }, undefined, undefined, ctx);
+    assert.ok(recalled.content.some((block) => block.type === "text" && block.text.includes(memoryText)));
+    const memoryIndex = await readFile(join(f.agentDir, "memory", "user", "MEMORY.md"), "utf8");
+    assert.match(memoryIndex, /Relay language preference/);
   } finally {
     session.dispose();
     await settingsManager.flush();

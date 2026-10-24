@@ -9,6 +9,7 @@ import {
   AUTH_PATH,
   EXTENSION_SOURCE,
   MODELS_PATH,
+  MEMORY_EXTENSION,
   NOTES_SETTINGS_PATH,
   PI_CLI_PATH,
   PI_SOURCE_DIR,
@@ -66,9 +67,10 @@ async function init(quiet = false): Promise<void> {
   });
   const nextPackages = [...otherPackages, localPackage ?? EXTENSION_SOURCE];
   const extensions = settings.extensions ?? [];
-  const nextExtensions = extensions.includes(RELAY_IDENTITY_EXTENSION)
-    ? extensions
-    : [...extensions, RELAY_IDENTITY_EXTENSION];
+  const nextExtensions = [...extensions];
+  for (const extension of [RELAY_IDENTITY_EXTENSION, MEMORY_EXTENSION]) {
+    if (!nextExtensions.includes(extension)) nextExtensions.push(extension);
+  }
   if (
     JSON.stringify(packages) !== JSON.stringify(nextPackages) ||
     JSON.stringify(extensions) !== JSON.stringify(nextExtensions)
@@ -93,6 +95,7 @@ async function init(quiet = false): Promise<void> {
     console.log(`Initialized Relay profile at ${AGENT_DIR}`);
     console.log(`Pi source: ${PI_SOURCE_DIR}`);
     console.log(`Notes extension: ${EXTENSION_SOURCE}`);
+    console.log(`Memory extension: ${MEMORY_EXTENSION}`);
     console.log("Start Relay and use /login to connect a provider.");
   }
 }
@@ -134,6 +137,13 @@ async function doctor(): Promise<void> {
       ? RELAY_IDENTITY_EXTENSION
       : "missing Relay-owned identity extension",
   ]);
+  checks.push([
+    "Relay memory extension",
+    existsSync(MEMORY_EXTENSION),
+    existsSync(MEMORY_EXTENSION)
+      ? MEMORY_EXTENSION
+      : "missing submodule; run git submodule update --init --recursive",
+  ]);
   try {
     const settings = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as {
       packages?: Array<string | { source: string }>;
@@ -149,8 +159,15 @@ async function doctor(): Promise<void> {
       identityConfigured,
       identityConfigured ? RELAY_IDENTITY_EXTENSION : "run relay init",
     ]);
+    const memoryConfigured = settings.extensions?.includes(MEMORY_EXTENSION) ?? false;
+    checks.push([
+      "Relay memory configuration",
+      memoryConfigured,
+      memoryConfigured ? MEMORY_EXTENSION : "run relay init",
+    ]);
   } catch {
     checks.push(["local extension configuration", false, "run relay init"]);
+    checks.push(["Relay memory configuration", false, "run relay init"]);
   }
   try {
     const Database = createRequire(import.meta.url)("better-sqlite3");
